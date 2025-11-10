@@ -1,0 +1,175 @@
+---
+title: "Análisis de Supervivencia: Inserción Laboral de Titulados Universitarios (EILU 2019)"
+author: "Asistencia de IA"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+# Configuración global de chunks
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+**Análisis de Supervivencia: Duración al Primer Empleo (EILU 2019)**
+
+**1. Metodología**
+
+Para estudiar el tiempo que un titulado universitario tarda en encontrar su primer empleo, se utiliza el Análisis de Supervivencia (o modelos de duración). Este método permite gestionar la censura, es decir, los casos donde el evento de interés (encontrar empleo) no ha ocurrido al finalizar el periodo de observación.El modelo aplicado es la Regresión de Riesgos Proporcionales de Cox ($\text{Cox PH Model}$), que modela el riesgo instantáneo ($\lambda$) de encontrar trabajo en función de un conjunto de variables explicativas ($X$):
+
+$$\lambda(t|X) = \lambda_0(t) \cdot \exp(\beta_1 X_1 + \beta_2 X_2 + ...)$$
+
+La interpretación clave recae en el $\text{Hazard Ratio}$ ($\text{HR} = \exp(\beta)$). Un $\text{HR} > 1$ indica que la variable aumenta la probabilidad de encontrar empleo rápidamente (menor duración), y un $\text{HR} < 1$ indica lo contrario. El grupo de referencia (Base) es: Hombre, Universidad Privada y la rama Artes y Humanidades.
+
+
+**2. Preparación de Datos y Ajuste del Modelo**
+
+El siguiente código realiza la carga del archivo separado por tabulaciones (.tsv), convierte las variables clave a formato numérico (crucial para el correcto funcionamiento), crea las variables de duración y evento, y ajusta el modelo de Cox.
+
+```{r}
+# Carga de librerías
+library(tidyverse)
+library(survival)
+library(survminer)
+library(readr)
+
+# Carga de datos (asumiendo que el separador es tabulación)
+# OJO: Cambiar la ruta si es necesario
+datos_eilu <- read_tsv("EILU_GRAD_2019.csv")
+
+# ----------------------------------------------------
+# A. Conversión de Tipos y Creación de Variables Dependientes (duracion y evento)
+# ----------------------------------------------------
+
+datos_limpios <- datos_eilu %>%
+  # Es CRUCIAL convertir las variables a numérico desde el caracter
+  mutate(
+    across(c(SEXO, T_UNIV, RAMA, HA_TRAB, HATR_E11, NOTRAB_BUST), as.numeric)
+  ) %>%
+  mutate(
+    # 1. Crear Evento (1 = Encontró, 0 = Censurado)
+    evento = if_else(HA_TRAB == 1, 1, 0),
+    
+    # Inicializar la columna de duración
+    duracion_meses = NA_real_,
+    
+    # 2. Crear Duración: Puntos medios para los que SÍ encontraron (evento == 1)
+    duracion_meses = case_when(
+      HA_TRAB == 1 & HATR_E11 == 0 ~ 0,
+      HA_TRAB == 1 & HATR_E11 == 1 ~ 1.5,
+      HA_TRAB == 1 & HATR_E11 == 2 ~ 4.5,
+      HA_TRAB == 1 & HATR_E11 == 3 ~ 9,
+      HA_TRAB == 1 & HATR_E11 == 4 ~ 15,
+      HA_TRAB == 1 & HATR_E11 == 5 ~ 21,
+      HA_TRAB == 1 & HATR_E11 == 6 ~ 24,
+      TRUE ~ duracion_meses
+    ),
+    
+    # Duración: Puntos medios para los que NO han encontrado (evento == 0, censurados)
+    duracion_meses = case_when(
+      evento == 0 & NOTRAB_BUST == 1 ~ 1.5,
+      evento == 0 & NOTRAB_BUST == 2 ~ 4.5,
+      evento == 0 & NOTRAB_BUST == 3 ~ 9,
+      evento == 0 & NOTRAB_BUST == 4 ~ 15,
+      evento == 0 & NOTRAB_BUST == 5 ~ 21,
+      evento == 0 & NOTRAB_BUST == 6 ~ 24,
+      TRUE ~ duracion_meses
+    ),
+    
+    # 3. Creación de Variables Explicativas (Factores)
+    mujer = factor(if_else(SEXO == 2, "Mujer", "Hombre")),
+    publica = factor(if_else(T_UNIV %in% c(1, 2), "Publica", "Privada")),
+    rama_etiqueta = factor(RAMA,
+                           levels = 1:5,
+                           labels = c("Artes/Humanidades", "Ciencias", "Sociales/Juridicas", "Ingenieria/Arq", "Ciencias de la Salud"))
+  ) %>%
+  # Seleccionar y omitir NA
+  select(duracion_meses, evento, mujer, publica, rama_etiqueta) %>%
+  na.omit()
+
+# Crear el objeto de supervivencia
+surv_object <- Surv(time = datos_limpios$duracion_meses, event = datos_limpios$evento)
+
+# Modelo de Regresión de Cox
+cox_model <- coxph(surv_object ~ mujer + publica + rama_etiqueta, data = datos_limpios)
+
+## 3. Gráfico de Supervivencia de Kaplan-Meier (por Género)
+
+# Este chunk asume que 'datos_limpios' ya existe
+# 1. Crear el objeto de supervivencia
+surv_object <- Surv(time = datos_limpios$duracion_meses, event = datos_limpios$evento)
+
+# 2. Ajustar el modelo Kaplan-Meier (km_fit) por la variable 'mujer'
+km_fit <- survfit(surv_object ~ mujer, data = datos_limpios)
+
+# 3. Generar el gráfico
+ggsurvplot(
+  km_fit,
+  data = datos_limpios,
+  title = "Curva de Supervivencia al Primer Empleo por Género",
+  xlab = "Tiempo en Meses",
+  ylab = "Probabilidad de seguir sin empleo",
+  legend.title = "Género",
+  legend.labs = c("Hombre", "Mujer"),
+  pval = TRUE,            # Añade el p-value del test Log-Rank
+  conf.int = TRUE,        # Añade intervalos de confianza
+  risk.table = TRUE,      # Muestra la tabla de riesgo (muy útil)
+  risk.table.y.text = FALSE,
+  risk.table.cumevents = TRUE,
+  risk.table.title = "Número en Riesgo y Eventos Acumulados"
+)
+
+```
+
+
+**3. Resultados del Modelo de Riesgos Proporcionales de Cox**
+
+El resumen del modelo muestra la estimación del coeficiente ($\text{coef}$), el $\text{Hazard Ratio}$ ($\exp(\text{coef})$), y su nivel de significación ($\text{Pr(>|z|)}$).
+
+```{r}
+# Mostrar el resultado del modelo (la tabla proporcionada)
+summary(cox_model)
+```
+
+
+**4. Interpretación de Resultados (Hazard Ratios)**
+
+La bondad de ajuste del modelo es altamente significativa ($\text{p-value}$ de las pruebas de Likelihood Ratio, Wald y Score $< 2\text{e-}16$). A continuación se interpreta el Hazard Ratio ($\text{HR}$) para cada variable, tomando como referencia: Hombre, Universidad Privada y Artes/Humanidades.
+
+| Variable        | HR (exp(β)) | p-value  | Interpretación del HR             |
+|:----------------|:------------|:---------|:----------------------------------|
+| Mujer           | 0.9653      | 0.003    | Disminuye el riesgo en 3.47%.     |
+| Univ. Pública   | 0.7550      | < 2e-16  | Disminuye el riesgo en 24.50%.    |
+| Ciencias        | 0.9407      | 0.022    | Disminuye el riesgo en 5.93%.     |
+| Ing./Arq.       | 1.4359      | < 2e-16  | Aumenta el riesgo en 43.59%.      |
+
+
+*Conclusiones Detalladas*
+
+**A. Efecto del Género**
+
+El $\text{HR}$ de Mujer ($0.9653$) es significativamente menor que $1$. Ceteris paribus, ser mujer está asociado con una probabilidad de encontrar empleo un $3.47\%$ menor que ser hombre. Esto sugiere que las mujeres tardan, en promedio, ligeramente más en lograr la inserción laboral inicial.
+
+
+**B. Efecto del Tipo de Universidad**
+
+El $\text{HR}$ de Universidad Pública ($0.7550$) es el más bajo de todos, excluyendo la referencia. Los titulados de universidades públicas tienen un riesgo de encontrar empleo un $24.50\%$ menor en comparación con los de universidades privadas. Esto se traduce en un tiempo de búsqueda sustancialmente mayor para los egresados de instituciones públicas.
+
+
+**C. Efecto de la Rama de Estudio**
+
+La Rama de Conocimiento es el factor con mayor impacto en la velocidad de inserción, tomando como base Artes/Humanidades:
+
+1. Ingeniería y Arquitectura presenta el riesgo relativo más alto ($\text{HR} = 1.4359$), lo que implica una probabilidad de encontrar empleo un $43.59\%$ mayor que Artes/Humanidades.
+
+2. Las Ciencias de la Salud y las Ciencias Sociales y Jurídicas también muestran un riesgo significativamente mayor (aumento del $31.92\%$ y $28.26\%$, respectivamente), confirmando una alta demanda laboral en estos campos.
+
+3. La rama de Ciencias es la única que muestra un $\text{HR}$ menor que $1$ frente a la referencia, con una disminución del $5.93\%$ en la probabilidad de encontrar empleo.
+
+
+**Conclusión Final**
+
+El análisis de Cox indica que la Rama de Conocimiento y el Tipo de Universidad son los principales determinantes de la velocidad de inserción laboral. La ruta más rápida al primer empleo se observa en la combinación de Ingeniería/Arquitectura y una Universidad Privada. Existe también una penalización menor pero significativa para el género femenino.
