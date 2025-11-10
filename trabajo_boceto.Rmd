@@ -202,6 +202,18 @@ exp(coef(weibull_model))
 
 [INSTRUCCIÓN: Pega las salidas de los comandos de R aquí. Inserta los gráficos generados (`ggsurvplot`) y las tablas de `summary(cox_model)` y `summary(weibull_model)`.]
 
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
 ### Análisis Descriptivo (Salida de `summary` y `table`)
 
 (Comenta la duración media y el porcentaje de censura (evento=0))
