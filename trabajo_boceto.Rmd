@@ -1,0 +1,253 @@
+---
+title: "trabajo_Economia_Del_Sector_Publico"
+output: html_document
+date: "2025-11-10"
+---
+
+# Análisis de la Duración del Desempleo Post-Graduación y sus Implicaciones en la Economía del Sector Público: Un Enfoque de Análisis de Supervivencia con R
+
+## Introducción y Marco Teórico
+
+### Motivación y Relevancia
+
+La duración del desempleo es un indicador directo del desajuste entre la oferta educativa y la demanda laboral. Para el Sector Público, reducir este tiempo es crucial, ya que minimiza el **coste social** del paro juvenil y mejora el **Retorno de la Inversión (ROI)** en educación superior financiada con fondos públicos. La variable clave `universidad_publica` permitirá evaluar la eficacia diferencial de la inversión estatal.
+
+### Objetivo General
+
+Analizar el tiempo (duración) que tarda un titulado universitario en encontrar su primer empleo, identificando la influencia de factores como **sexo, rama de conocimiento y tipo de universidad** mediante modelos de duración (Cox y Weibull) en R.
+
+## Datos y Variables
+
+### Fuente de Datos
+
+Se utiliza la Encuesta de Inserción Laboral de Titulados Universitarios (EILU) 2019. Específicamente, el fichero de **Graduados Universitarios (`EILU_GRAD_2019.csv` o `.dta`)**.
+
+### Variables Clave y Preparación
+
+La creación de las variables de duración (`duracion`) y evento (`evento`) es el paso inicial, dependiente de las variables de fecha de la encuesta.
+
+|  |  |  |
+|------------------------|------------------------|------------------------|
+| **Variable** | **Descripción** | **Tipo** |
+| **`duracion`** | Tiempo (en meses) desde finalización de estudios hasta primer empleo. | Dependiente |
+| **`evento`** | 1 si encontró empleo, 0 si no (censura). | Dependiente |
+| **`sexo`** | Hombre (referencia)/Mujer. | Explicativa |
+| **`rama`** | Rama de conocimiento (Categórica). | Explicativa |
+| **`universidad_publica`** | 1 si universidad pública, 0 privada. | Explicativa |
+| **`nota_media`** | Nota media del expediente. | Explicativa |
+
+## Metodología: Análisis de Supervivencia en R
+
+Se empleará el **Análisis de Supervivencia**, ideal para tratar con la **censura** (individuos cuyo evento aún no ha ocurrido) y modelar el *tiempo hasta el evento*.
+
+### Modelos a Emplear
+
+1.  **Modelo de Kaplan-Meier (No Paramétrico):** Para visualizar la **función de supervivencia** por grupos (ej. `sexo`, `universidad_publica`).
+
+2.  **Modelo de Riesgos Proporcionales de Cox (`coxph`):** Modelo semi-paramétrico que estima los **Hazard Ratios (HR)**, mostrando el efecto de las covariables sobre el riesgo de encontrar empleo.
+
+3.  **Modelo Paramétrico de Weibull (`survreg`):** Modelo que asume una distribución (Weibull) y permite interpretar cómo el **riesgo cambia a lo largo del tiempo**.
+
+## Desarrollo Práctico en R (Código)
+
+```{r, echo=FALSE}
+# Instalar y cargar paquetes (si no están instalados)
+# install.packages(c("haven", "tidyverse", "survival", "survminer"))
+library(haven)     # Para leer archivos .dta
+library(tidyverse) # Para manipulación de datos
+library(survival)  # Para modelos de supervivencia
+library(survminer) # Para gráficos de Kaplan-Meier (ggsurvplot)
+
+# --- 4.1. IMPORTACIÓN Y LIMPIEZA DE DATOS ---
+
+# Cargar el archivo .dta (Stata)
+# Alternativamente, si usas el CSV, usa read_delim("EILU_GRAD_2019.csv", delim = "\t")
+datos_eilu <- read_tsv("EILU_GRAD_2019.csv")
+names(datos_eilu)
+# Instalar y cargar paquetes (si no están instalados)
+library(tidyverse)
+
+# --- 1. CARGA DE DATOS (Asegúrate de que este paso ya funciona) ---
+datos_eilu <- read_delim("EILU_GRAD_2019.csv", delim = "\t")
+
+# --- 2. DIAGNÓSTICO DE VARIABLES CLAVE DE FECHA ---
+# Vamos a chequear qué valores tiene el 'proxy' de año de fin de estudios (EST_B1)
+print("Valores únicos y conteo de EST_B1:")
+table(datos_eilu$EST_B1, useNA = "ifany")
+
+# Vamos a chequear qué valores tiene el 'proxy' de año de empleo (TR_ANIO)
+print("Valores únicos y conteo de TR_ANIO:")
+table(datos_eilu$TR_ANIO, useNA = "ifany")
+
+# Selección y estandarización de variables clave
+# --- CÓDIGO FINAL DE PREPARACIÓN DE DATOS (CON PROXY DE AÑO DE TITULACIÓN ESTIMADO) ---
+
+datos <- datos_eilu %>%
+  mutate(
+    # --- 1. LIMPIEZA Y ESTIMACIÓN DE FECHAS ---
+    
+    # 1.1. Estimación del Año de Fin de Estudios (EST_ANIO_est): 
+    # Usamos la edad y el año de la encuesta (2019)
+    # R convierte los valores perdidos o 99s a NA.
+    EST_B22_num = as.numeric(EST_B22), # Edad al finalizar estudios
+    EDAD_num = as.numeric(EDAD),       # Edad actual
+    
+    # ASUMIMOS: Año Titulación = 2019 - (Edad Actual - Edad al Titularse)
+    EST_ANIO_est = 2019 - (EDAD_num - EST_B22_num), 
+    
+    # 1.2. Año de Empleo (TR_ANIO): Limpiamos los códigos de error (9999 y 4527)
+    TR_ANIO_num = as.numeric(TR_ANIO),
+    TR_ANIO_limpio = if_else(TR_ANIO_num > 2020 | TR_ANIO_num < 1980, NA, TR_ANIO_num), 
+    
+    # 1.3. Mes Fin Estudios (EST_MES): Limpiamos códigos de error
+    EST_MES_num = as.numeric(EST_MES),
+    EST_MES_limpio = if_else(EST_MES_num > 12 | EST_MES_num < 1, NA, EST_MES_num),
+    
+    # 1.4. Nota Media: Usamos EST_B8 (asumiendo que es una nota). Limpiamos el 9.
+    EST_B8_num = as.numeric(EST_B8),
+    nota_media = if_else(EST_B8_num == 9, NA, EST_B8_num),
+
+    # --- 2. CÁLCULO DE DURACIÓN Y EVENTO ---
+    
+    # FIN DE ESTUDIOS (Inicio del riesgo)
+    fecha_fin_estudios = EST_ANIO_est * 12 + EST_MES_limpio, 
+    
+    # PRIMER EMPLEO (Fecha del evento). Asumimos Diciembre si es el trabajo actual
+    fecha_primer_empleo = TR_ANIO_limpio * 12 + 12, 
+    
+    # 2.1. CREACIÓN DE DURACIÓN (en meses)
+    duracion = fecha_primer_empleo - fecha_fin_estudios,
+    
+    # 2.2. CREACIÓN DE EVENTO (1=encontró, 0=censura)
+    # Evento: 1 si encontramos un año de empleo válido, 0 si no (censura).
+    evento = if_else(!is.na(TR_ANIO_limpio) & !is.na(duracion) & duracion >= 1, 1, 0),
+    
+    # Ajuste: duración mínima de 1 mes 
+    duracion = if_else(duracion < 1 & evento == 1, 1, duracion),
+    
+    # --- 3. RECODIFICACIÓN DE EXPLICATIVAS ---
+    sexo = factor(SEXO, levels = c(1, 2), labels = c("Hombre", "Mujer")),
+    rama = factor(RAMA), 
+    universidad_publica = factor(T_UNIV, levels = c(1, 2), labels = c("Pública", "Privada")),
+    
+    # Estudios del padre (usamos la variable limpia)
+    estudios_padre = factor(ESTUDIOS_PADRE)
+  )
+
+# --- 4. FILTRADO FINAL ---
+datos_final <- datos %>%
+  # Quitamos NAs en la duración y duración extrema (> 10 años)
+  filter(!is.na(duracion) & duracion >= 1 & duracion <= 120)
+
+# Verificación
+print(paste("Total filas restantes (datos finales listos):", nrow(datos_final)))
+summary(datos_final$duracion)
+table(datos_final$evento)
+
+
+# --- 4.3. ANÁLISIS DE SUPERVIVENCIA (KM y Modelos) ---
+
+
+# 1. Objeto de Supervivencia (Reemplaza al stset de Stata)
+# ¡CRUCIAL! Debe usar datos_final$duracion y datos_final$evento
+surv_obj <- Surv(time = datos_final$duracion, event = datos_final$evento)
+
+# Verifica la salida. Ahora debería mostrar la duración y el estado (1 o 0)
+# para las filas que sobrevivieron al filtro.
+print("Objeto de Supervivencia creado:")
+surv_obj[1:20] 
+
+# 2. Gráfico de Kaplan-Meier por SEXO
+km_sexo <- survfit(surv_obj ~ sexo, data = datos_final)
+ggsurvplot(km_sexo, data = datos_final, pval = TRUE, conf.int = TRUE,
+           risk.table = TRUE, legend.labs = c("Hombres", "Mujeres"),
+           title = "Función de Supervivencia (Kaplan-Meier) por Sexo",
+           xlab = "Tiempo (meses)", ylab = "Probabilidad de seguir desempleado")
+
+# 3. Gráfico de Kaplan-Meier por TIPO DE UNIVERSIDAD
+km_univ <- survfit(surv_obj ~ universidad_publica, data = datos_final)
+ggsurvplot(km_univ, 
+           data = datos_final, 
+           pval = TRUE, 
+           conf.int = FALSE,  # <--- CAMBIO CLAVE AQUÍ: Desactivamos la banda de confianza
+           risk.table = TRUE, 
+           legend.labs = c("Pública", "Privada"),
+           title = "Función de Supervivencia (Kaplan-Meier) por Universidad",
+           xlab = "Tiempo (meses)", 
+           ylab = "Probabilidad de seguir desempleado")
+
+
+# 4. MODELO DE RIESGOS PROPORCIONALES DE COX (Principal)
+# Nota: La rama se incluye como factor (factor(rama))
+# Asegúrate de usar 'datos_final' en lugar de 'datos'
+cox_model <- coxph(surv_obj ~ sexo + rama + universidad_publica + nota_media, 
+                   data = datos_final)
+
+print("Resultados del Modelo de Cox:")
+summary(cox_model) # Busca la columna exp(coef) para los Hazard Ratios (HR)
+
+# 5. MODELO PARAMÉTRICO (WEIBULL)
+# Utiliza la función survreg para modelos paramétricos
+weibull_model <- survreg(surv_obj ~ sexo + rama + universidad_publica + nota_media, 
+                         data = datos_final, dist = "weibull")
+print("Resultados del Modelo Weibull:")
+summary(weibull_model) 
+# Nota: El parámetro 'Scale' de Weibull es la inversa de 'p' (gamma). Si Scale < 1, p > 1.
+
+# Para obtener los Hazard Ratios (HR) del modelo Weibull:
+exp(coef(weibull_model))
+```
+
+## Resultados del Análisis
+
+[INSTRUCCIÓN: Pega las salidas de los comandos de R aquí. Inserta los gráficos generados (`ggsurvplot`) y las tablas de `summary(cox_model)` y `summary(weibull_model)`.]
+
+### Análisis Descriptivo (Salida de `summary` y `table`)
+
+(Comenta la duración media y el porcentaje de censura (evento=0))
+
+### Análisis Gráfico (Kaplan-Meier)
+
+**Gráfico 1: Función de Supervivencia por Sexo.** *Comentario:* Interpreta si hay diferencias visuales entre hombres y mujeres. Una curva más baja indica una **tasa de supervivencia más baja** al desempleo (encuentran trabajo más rápido).
+
+**Gráfico 2: Función de Supervivencia por Tipo de Universidad.** *Comentario:* Evalúa el impacto visual de la inversión pública.
+
+### Modelo de Riesgos Proporcionales de Cox
+
+*Tabla 1*: Resultados del Modelo de Cox (Hazard Ratios)
+
+|  |  |  |  |  |
+|---------------|---------------|---------------|---------------|---------------|
+| **Variable** | **Coef. (β)** | **HR (eβ)** | **P-Valor** | **Interpretación (Ejemplo)** |
+| **sexoMujer** | [Valor] | [Valor] | [Valor] | **Si HR \> 1:** Las mujeres tienen un riesgo [HR-1]% mayor de encontrar empleo que los hombres. |
+| **universidad_publicaPrivada** | [Valor] | [Valor] | [Valor] | **Si HR \< 1:** Los graduados de universidades privadas tienen un riesgo [1-HR]% menor que los de públicas. |
+| **nota_media** | [Valor] | [Valor] | [Valor] | **Si HR \> 1:** Por cada punto adicional de nota media, el riesgo aumenta en [HR-1]%. |
+| **rama[X]** | [Valor] | [Valor] | [Valor] | ... |
+
+*(Comentario clave:* Céntrate en los HR con P-Valor significativo. Un **HR \> 1** significa que la variable **acelera** la inserción laboral. Un **HR \< 1** la **ralentiza**.)
+
+### Modelo Paramétrico (Weibull)
+
+**Tabla 2: Resultados del Modelo Paramétrico (Weibull)**
+
+*(Comentario clave:* Analiza el parámetro **Scale** (`p` o $\gamma$). Si **Scale \< 1** (lo que implica un parámetro de forma $p > 1$), el riesgo de encontrar empleo **aumenta** a medida que el tiempo pasa. Si **Scale \> 1** ($p < 1$), el riesgo **disminuye** (ej. estigma del desempleo de larga duración).)
+
+## Conclusiones e Implicaciones de Política Pública
+
+### 6.1. Resumen de Hallazgos
+
+-   Sintetiza los resultados más fuertes (ej. la rama de conocimiento más beneficiada, el efecto del sexo).
+
+-   **Enfoque Sector Público:** Resume la comparación entre universidad pública y privada.
+
+### 6.2. Implicaciones para la Política Pública
+
+1.  **Reasignación de Recursos Educativos:** Si ciertas **ramas** muestran una duración significativamente más corta, el Sector Público podría justificar una **mayor inversión o el fomento** de vocaciones en esas áreas (ej. Ingenierías, Informática) y revisar los planes de estudio en las ramas con peor inserción.
+
+2.  **Eficiencia de la Universidad Pública:** Si el HR para la universidad pública es significativamente menor que para la privada, esto podría indicar que la inversión estatal no está generando una ventaja competitiva en la inserción laboral. Se podría recomendar una **revisión de los incentivos** o la estructura curricular de las universidades públicas para optimizar el **retorno social de la inversión**.
+
+3.  **Políticas de Equidad:** Si `sexo` muestra un HR significativamente diferente de 1, se justifica la implementación de **políticas activas de empleo específicas** para mitigar esa disparidad.
+
+### 6.3. Limitaciones y Futuras Líneas de Investigación
+
+Menciona la limitación de la censura y cómo futuras encuestas o datos longitudinales podrían mejorar el análisis.
